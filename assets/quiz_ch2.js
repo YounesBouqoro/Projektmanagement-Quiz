@@ -1,5 +1,7 @@
 (function () {
-  const QUESTIONS = window.QUESTIONS_CH2 || [];
+  function getQuestions() {
+  return window.QUESTIONS_CH2 || [];
+}
   const RUN_SIZE = 12;
 
   const STATS_KEY = "pmquiz_stats_ch2";
