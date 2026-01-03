@@ -36,11 +36,11 @@
   }
 
   function newRun() {
-    if (QUESTIONS.length < RUN_SIZE) {
+    if (getQuestions().length < RUN_SIZE) {
       alert("Zu wenige Fragen im Katalog.");
       return;
     }
-    const picked = shuffle(QUESTIONS).slice(0, RUN_SIZE).map(q => ({ id: q.id, picked: null }));
+    const picked = shuffle(getQuestions()).slice(0, RUN_SIZE).map(q => ({ id: q.id, picked: null }));
     const run = { createdAt: Date.now(), finished: false, answers: picked };
     localStorage.setItem(RUN_KEY, JSON.stringify(run));
     render();
