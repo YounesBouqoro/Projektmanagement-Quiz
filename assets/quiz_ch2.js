@@ -1,18 +1,18 @@
 /* ======================================================
    Projektmanagement – Kapitel 2 Quiz Engine
-   - 12 random questions per run
-   - Single-choice
-   - Review
-   - localStorage stats
+   - Normalmodus: 12 zufällig
+   - Klausurmodus (?mode=exam): Quoten nach Fragentypen
+     (basic | compare | transfer | calculation)
+   - Review + localStorage Stats
    ====================================================== */
 
 (function () {
   const RUN_SIZE = 12;
 
   const STATS_KEY = "pmquiz_stats_ch2";
-  const RUN_KEY = "pmquiz_run_ch2";
+  const RUN_KEY   = "pmquiz_run_ch2";
 
-  // --- DOM refs (with safety checks)
+  // --- DOM refs
   const quizRoot = document.getElementById("quizRoot");
   const progressText = document.getElementById("progressText");
   const scoreText = document.getElementById("scoreText");
@@ -22,16 +22,14 @@
   const reviewBtn = document.getElementById("reviewBtn");
   const statsBox = document.getElementById("statsBox");
 
-  function mustExist(el, name) {
+  function mustExist(el, id) {
     if (!el) {
-      // Fail loudly so you see it immediately in Console
-      console.error(`Quiz CH2: Missing element #${name}. Check chapter2.html IDs.`);
+      console.error(`Quiz CH2: Missing element #${id}. Check chapter2.html.`);
       return false;
     }
     return true;
   }
 
-  // If core container missing, stop (otherwise nothing can render anyway)
   const coreOk =
     mustExist(quizRoot, "quizRoot") &&
     mustExist(progressText, "progressText") &&
@@ -40,28 +38,30 @@
 
   if (!coreOk) return;
 
-  // --- Dynamic question access (FIX for your issue)
+  // --- mode
+  function getMode() {
+    const p = new URLSearchParams(window.location.search);
+    return (p.get("mode") || "").toLowerCase() === "exam" ? "exam" : "normal";
+  }
+
+  // --- Questions: dynamic access (no freezing)
   function getQuestions() {
     const q = window.QUESTIONS_CH2;
     return Array.isArray(q) ? q : [];
   }
 
+  // --- Stats
   function defaultStats() {
     return { runs: 0, bestScore: 0, lastScore: 0, totalCorrect: 0, totalQuestions: 0 };
   }
-
   function loadStats() {
-    try {
-      return JSON.parse(localStorage.getItem(STATS_KEY)) || defaultStats();
-    } catch {
-      return defaultStats();
-    }
+    try { return JSON.parse(localStorage.getItem(STATS_KEY)) || defaultStats(); } catch { return defaultStats(); }
   }
-
   function saveStats(s) {
     localStorage.setItem(STATS_KEY, JSON.stringify(s));
   }
 
+  // --- Utils
   function shuffle(arr) {
     const a = [...arr];
     for (let i = a.length - 1; i > 0; i--) {
@@ -71,22 +71,37 @@
     return a;
   }
 
-  function loadRun() {
-    try {
-      return JSON.parse(localStorage.getItem(RUN_KEY)) || null;
-    } catch {
-      return null;
-    }
+  function escapeHtml(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
   }
 
+  function showFatal(msg) {
+    quizRoot.innerHTML = `
+      <div class="question">
+        <p class="q-title">⚠️ Quiz kann nicht starten</p>
+        <p class="muted">${escapeHtml(msg)}</p>
+        <p class="muted">Check: <code>window.QUESTIONS_CH2?.length</code></p>
+      </div>
+    `;
+  }
+
+  // --- Run storage
+  function loadRun() {
+    try { return JSON.parse(localStorage.getItem(RUN_KEY)) || null; } catch { return null; }
+  }
   function saveRun(run) {
     localStorage.setItem(RUN_KEY, JSON.stringify(run));
   }
-
   function clearRun() {
     localStorage.removeItem(RUN_KEY);
   }
 
+  // --- Finder
   function getQuestionById(id) {
     return getQuestions().find(q => q.id === id);
   }
@@ -96,6 +111,85 @@
     return { answered, total: run.answers.length };
   }
 
+  // --- Exam selection strategy
+  function hasTypes(questions) {
+    return questions.some(q => typeof q.type === "string" && q.type.trim().length > 0);
+  }
+
+  function pickWithQuota(questions, quota) {
+    const byType = {};
+    for (const q of questions) {
+      const t = (q.type || "").toLowerCase();
+      if (!byType[t]) byType[t] = [];
+      byType[t].push(q);
+    }
+
+    const picked = [];
+    for (const [type, count] of Object.entries(quota)) {
+      const pool = shuffle(byType[type] || []);
+      picked.push(...pool.slice(0, count));
+    }
+
+    // Fill remaining slots with any leftover (no duplicates)
+    const need = RUN_SIZE - picked.length;
+    if (need > 0) {
+      const pickedIds = new Set(picked.map(x => x.id));
+      const rest = shuffle(questions.filter(q => !pickedIds.has(q.id)));
+      picked.push(...rest.slice(0, need));
+    }
+
+    return picked.slice(0, RUN_SIZE);
+  }
+
+  function createRun() {
+    const questions = getQuestions();
+    if (questions.length < RUN_SIZE) {
+      showFatal(`Zu wenige Fragen im Katalog. Gefunden: ${questions.length}, benötigt: ${RUN_SIZE}.`);
+      return null;
+    }
+
+    const mode = getMode();
+    let selected;
+
+    if (mode === "exam" && hasTypes(questions)) {
+      // Klausurmodus-Quote (anpassbar; Transfer hoch!)
+      // Ziel: Transfer-Frage(n) + Modellvergleich + Grundlagen
+      const QUOTA = { basic: 3, compare: 4, transfer: 5, calculation: 0 };
+      selected = pickWithQuota(questions, QUOTA);
+    } else {
+      // Normalmodus (oder Exam ohne Types): random
+      selected = shuffle(questions).slice(0, RUN_SIZE);
+    }
+
+    const run = {
+      createdAt: Date.now(),
+      finished: false,
+      mode,
+      answers: selected.map(q => ({ id: q.id, picked: null }))
+    };
+
+    saveRun(run);
+    return run;
+  }
+
+  function resetRunUI() {
+    if (resultBox) resultBox.classList.add("hidden");
+    if (reviewBox) reviewBox.classList.add("hidden");
+    if (reviewBtn) reviewBtn.disabled = true;
+
+    statusText.textContent = "Laufend";
+    scoreText.textContent = "0";
+    progressText.textContent = `0 / ${RUN_SIZE}`;
+  }
+
+  function resetRun() {
+    clearRun();
+    resetRunUI();
+    createRun();
+    render();
+  }
+
+  // --- Stats render
   function renderStats() {
     if (!statsBox) return;
 
@@ -114,72 +208,36 @@
     `;
   }
 
-  function showFatal(msg) {
-    quizRoot.innerHTML = `
-      <div class="question">
-        <p class="q-title">⚠️ Quiz kann nicht starten</p>
-        <p class="muted">${msg}</p>
-        <p class="muted">Check: Fragen-Datei geladen? In der Console: <code>window.QUESTIONS_CH2?.length</code></p>
-      </div>
-    `;
-  }
-
-  function newRun() {
-    const QUESTIONS = getQuestions();
-
-    if (QUESTIONS.length < RUN_SIZE) {
-      showFatal(
-        `Zu wenige Fragen im Katalog (gefunden: ${QUESTIONS.length}). 
-         Stelle sicher, dass assets/questions_ch2.js geladen wird und window.QUESTIONS_CH2 ein Array ist.`
-      );
-      return;
-    }
-
-    const picked = shuffle(QUESTIONS)
-      .slice(0, RUN_SIZE)
-      .map(q => ({ id: q.id, picked: null }));
-
-    const run = { createdAt: Date.now(), finished: false, answers: picked };
-    saveRun(run);
-
-    // reset UI bits
-    if (resultBox) resultBox.classList.add("hidden");
-    if (reviewBox) reviewBox.classList.add("hidden");
-    if (reviewBtn) reviewBtn.disabled = true;
-
-    scoreText.textContent = "0";
-    statusText.textContent = "Laufend";
-    progressText.textContent = `0 / ${RUN_SIZE}`;
-
-    render();
-  }
-
-  function resetRun() {
-    clearRun();
-    newRun();
-  }
-
+  // --- Render quiz
   function render() {
-    const run = loadRun();
+    let run = loadRun();
 
-    // If no run, create one
     if (!run) {
-      newRun();
-      return;
+      run = createRun();
+      if (!run) return;
     }
 
-    // Validate run: do all ids exist in catalog?
+    // If mode changed, recreate run to match mode
+    if (run.mode && run.mode !== getMode()) {
+      clearRun();
+      resetRunUI();
+      run = createRun();
+      if (!run) return;
+    }
+
+    // If catalog changed or invalid ids, recreate run
     const missing = run.answers.filter(a => !getQuestionById(a.id)).length;
     if (missing > 0) {
-      // Catalog changed or old run persisted: nuke it and recreate
       console.warn("Quiz CH2: Run contains unknown question IDs. Recreating run.");
       clearRun();
-      newRun();
-      return;
+      resetRunUI();
+      run = createRun();
+      if (!run) return;
     }
 
     const { answered, total } = computeProgress(run);
     progressText.textContent = `${answered} / ${total}`;
+
     quizRoot.innerHTML = "";
 
     run.answers.forEach((a, idx) => {
@@ -189,19 +247,16 @@
       const qEl = document.createElement("div");
       qEl.className = "question";
       qEl.innerHTML = `
-        <p class="q-title">${idx + 1}. ${q.q}</p>
+        <p class="q-title">${idx + 1}. ${escapeHtml(q.q)}</p>
         <div class="options">
-          ${q.options
-            .map(
-              (opt, oi) => `
-              <label class="opt">
-                <input type="radio" name="q_${q.id}" value="${oi}"
-                  ${a.picked === oi ? "checked" : ""}
-                  ${run.finished ? "disabled" : ""}/>
-                <span>${opt}</span>
-              </label>`
-            )
-            .join("")}
+          ${q.options.map((opt, oi) => `
+            <label class="opt">
+              <input type="radio" name="q_${q.id}" value="${oi}"
+                ${a.picked === oi ? "checked" : ""}
+                ${run.finished ? "disabled" : ""}/>
+              <span>${escapeHtml(opt)}</span>
+            </label>
+          `).join("")}
         </div>
       `;
       quizRoot.appendChild(qEl);
@@ -228,6 +283,7 @@
     renderStats();
   }
 
+  // --- Grade
   function gradeRun(run) {
     let correct = 0;
 
@@ -251,15 +307,6 @@
     return { correct, total: run.answers.length, details };
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
-
   function submit() {
     const run = loadRun();
     if (!run || run.finished) return;
@@ -272,7 +319,6 @@
     }
 
     const graded = gradeRun(run);
-
     run.finished = true;
     run.graded = graded;
     saveRun(run);
@@ -311,31 +357,25 @@
     if (!run || !run.finished || !run.graded || !reviewBox) return;
 
     reviewBox.classList.remove("hidden");
-    const rows = run.graded.details
-      .map(
-        (d, i) => `
-        <div class="question">
-          <div class="row space">
-            <p class="q-title" style="margin:0">${i + 1}. ${escapeHtml(d.q)}</p>
-            <span class="tag ${d.ok ? "ok" : "bad"}">${d.ok ? "Richtig" : "Falsch"}</span>
-          </div>
-          <div class="divider"></div>
-          <p><span class="muted">Deine Antwort:</span> ${escapeHtml(d.pickedText)}</p>
-          <p><span class="muted">Richtige Antwort:</span> ${escapeHtml(d.answerText)}</p>
-          ${d.explanation ? `<p class="muted" style="margin-top:8px">${escapeHtml(d.explanation)}</p>` : ""}
+
+    const rows = run.graded.details.map((d, i) => `
+      <div class="question">
+        <div class="row space">
+          <p class="q-title" style="margin:0">${i + 1}. ${escapeHtml(d.q)}</p>
+          <span class="tag ${d.ok ? "ok" : "bad"}">${d.ok ? "Richtig" : "Falsch"}</span>
         </div>
-      `
-      )
-      .join("");
+        <div class="divider"></div>
+        <p><span class="muted">Deine Antwort:</span> ${escapeHtml(d.pickedText)}</p>
+        <p><span class="muted">Richtige Antwort:</span> ${escapeHtml(d.answerText)}</p>
+        ${d.explanation ? `<p class="muted" style="margin-top:8px">${escapeHtml(d.explanation)}</p>` : ""}
+      </div>
+    `).join("");
 
     reviewBox.innerHTML = `<h3 style="margin:0 0 10px 0">Review</h3>${rows}`;
   }
 
   // --- UI wiring
-  document.getElementById("newRun")?.addEventListener("click", () => {
-    newRun();
-  });
-
+  document.getElementById("newRun")?.addEventListener("click", () => resetRun());
   document.getElementById("submitBtn")?.addEventListener("click", submit);
   document.getElementById("reviewBtn")?.addEventListener("click", showReview);
   document.getElementById("resetRunBtn")?.addEventListener("click", resetRun);
@@ -343,11 +383,21 @@
   // --- init stats storage
   if (!localStorage.getItem(STATS_KEY)) saveStats(defaultStats());
 
-  // --- init run: if none, create one; then render
-  if (!loadRun()) newRun();
+  // --- init run (mode-aware)
+  if (!loadRun()) {
+    createRun();
+  } else {
+    const r = loadRun();
+    if (r && r.mode && r.mode !== getMode()) {
+      clearRun();
+      resetRunUI();
+      createRun();
+    }
+  }
+
   render();
 
   // Restore score if already finished
-  const r = loadRun();
-  if (r?.finished && r?.graded) scoreText.textContent = `${r.graded.correct}/12`;
+  const r2 = loadRun();
+  if (r2?.finished && r2?.graded) scoreText.textContent = `${r2.graded.correct}/12`;
 })();
